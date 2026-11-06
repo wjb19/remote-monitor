@@ -1,0 +1,11 @@
+url=https://github.com/afrociberdelio/rtl8852bu_drivers.git
+branch=1.19.3
+commit=f6fbecaae0d33ab323d73893a0887e3e8ed76dd8
+module=8852bu
+usb_disk=0bda:1a2b
+usb_wifi=0bda:b832
+chip=RTL8852BU
+chip_id=0x51
+kernel=4.9.337-tegra
+interface=wlan0
+ssid=NETGEAR41

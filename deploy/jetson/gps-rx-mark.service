@@ -1,0 +1,13 @@
+[Unit]
+Description=Release the Waveshare L76K receive line
+DefaultDependencies=no
+After=local-fs.target
+Before=rmlab-lora-pkt-fwd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/rmlab/deploy/jetson/gps-rx-mark.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

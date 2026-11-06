@@ -1,0 +1,34 @@
+[logging]
+  level = "info"
+
+[postgresql]
+  dsn = "postgres://chirpstack:chirpstack@postgres/chirpstack?sslmode=disable"
+  max_open_connections = 10
+  min_idle_connections = 0
+
+[redis]
+  servers = ["redis://redis:6379"]
+  cluster_mode = false
+
+[network]
+  net_id = "000000"
+  enabled_regions = ["us915_0"]
+
+[network.scheduler]
+  interval = "1s"
+  class_a_lock_duration = "5s"
+  class_c_lock_duration = "5s"
+
+[api]
+  bind = "0.0.0.0:8080"
+  secret = "rmlab-change-me-please"
+
+[gateway]
+  allow_unknown_gateways = true
+
+[integration]
+  enabled = ["mqtt"]
+
+  [integration.mqtt]
+    server = "tcp://mosquitto:1883/"
+    json = true

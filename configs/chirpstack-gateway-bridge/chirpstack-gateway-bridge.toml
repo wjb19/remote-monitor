@@ -1,0 +1,26 @@
+# Semtech UDP packet-forwarder -> MQTT (US915 sub-band 0)
+# Docs: https://www.chirpstack.io/docs/chirpstack-gateway-bridge/configuration.html
+
+[general]
+log_level = 4
+
+[backend.semtech_udp]
+udp_bind = "0.0.0.0:1700"
+
+# v4 reads the marshaler here. ChirpStack consumes protobuf on this topic,
+# so it stays protobuf. The lab core reads the GPS fix out of that message.
+[integration]
+marshaler = "protobuf"
+
+[integration.mqtt]
+event_topic_template = "us915_0/gateway/{{ .GatewayID }}/event/{{ .EventType }}"
+state_topic_template = "us915_0/gateway/{{ .GatewayID }}/state/{{ .StateType }}"
+command_topic_template = "us915_0/gateway/{{ .GatewayID }}/command/#"
+
+[integration.mqtt.auth]
+type = "generic"
+
+[integration.mqtt.auth.generic]
+servers = ["tcp://mosquitto:1883"]
+username = ""
+password = ""

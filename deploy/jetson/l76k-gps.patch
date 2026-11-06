@@ -1,0 +1,19 @@
+# Applied on the Jetson tree at /home/bill/sx1302_hal (not vendored here).
+# The stock parser ignores an L76K RMC because NMEA 4.10 adds a status
+# field, and the forwarder only copied a position after RMC. GGA already
+# holds the fix, so a GGA now updates the gateway coordinates too.
+
+--- a/libloragw/src/loragw_gps.c
++++ b/libloragw/src/loragw_gps.c
+@@
+-        if (nb_fields != 13) {
++        /* NMEA 4.10 RMC adds a navigation-status field, so L76K sends 14. */
++        if (nb_fields != 13 && nb_fields != 14) {
+
+--- a/packet_forwarder/src/lora_pkt_fwd.c
++++ b/packet_forwarder/src/lora_pkt_fwd.c
+@@
+-                    } else if (latest_msg == NMEA_RMC) { /* Get location from RMC frames */
++                    } else if (latest_msg == NMEA_RMC || latest_msg == NMEA_GGA) {
++                        /* L76K position is in GGA. Its RMC has an extra status field and is often ignored. */
+                         gps_process_coords();

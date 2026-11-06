@@ -1,0 +1,220 @@
+--- libloragw/src/loragw_spi.c.orig	2024-01-12 12:32:04.920047836 -0600
++++ libloragw/src/loragw_spi.c	2026-10-18 12:16:39.410583714 -0500
+@@ -27,6 +27,7 @@
+ #include <string.h>     /* memset */
+ 
+ #include <sys/ioctl.h>
++#include <sys/mman.h>
+ #include <linux/spi/spidev.h>
+ 
+ #include "loragw_spi.h"
+@@ -54,6 +55,125 @@
+ 
+ #define LGW_BURST_CHUNK     1024
+ 
++/*
++ * Jetson Nano header chip-select rises before the last byte of a hardware
++ * SPI transfer is latched. Bitbang mode 0 on PC0/PC1/PC2/PC3 keeps CS low
++ * for the whole frame. Do not map the SPI controller; it is clock-gated.
++ */
++static void bb_shutdown(void);
++static int bb_fd = -1;
++static volatile uint32_t *bb_gpio;
++static volatile uint32_t *bb_pin;
++
++static void bb_msk(unsigned reg, int bit, int on) {
++    uint32_t m = 1u << bit;
++    bb_gpio[reg / 4] = (m << 8) | (on ? m : 0);
++}
++
++static void bb_out(int bit, int high) {
++    bb_msk(0xA8, bit, high);
++}
++
++static int bb_miso(void) {
++    return (int)((bb_gpio[0x38 / 4] >> 1) & 1);
++}
++
++static void bb_delay(void) {
++    volatile int i;
++    for (i = 0; i < 40; ++i) {
++    }
++}
++
++static void bb_claim(void) {
++    int bit;
++    bb_pin[0x50 / 4] = 0xE041; /* MOSI */
++    bb_pin[0x54 / 4] = 0xE041; /* MISO */
++    bb_pin[0x58 / 4] = 0xE041; /* SCK */
++    bb_pin[0x5C / 4] = 0xE049; /* CS, pull-up */
++    for (bit = 0; bit < 4; ++bit) {
++        bb_msk(0x88, bit, 1);
++        bb_msk(0x98, bit, bit != 1);
++    }
++    bb_out(2, 0);
++    bb_out(3, 1);
++}
++
++static void bb_release_pins(void) {
++    int bit;
++    if (bb_gpio == NULL || bb_pin == NULL) {
++        return;
++    }
++    for (bit = 0; bit < 4; ++bit) {
++        bb_msk(0x88, bit, 0);
++    }
++    bb_pin[0x50 / 4] = 0xE000;
++    bb_pin[0x54 / 4] = 0xE040;
++    bb_pin[0x58 / 4] = 0xE000;
++    bb_pin[0x5C / 4] = 0xE008;
++    bb_gpio[0x008 / 4] &= ~0x1Fu;
++}
++
++static int bb_init(void) {
++    if (bb_fd >= 0) {
++        return 0;
++    }
++    bb_fd = open("/dev/mem", O_RDWR | O_SYNC);
++    if (bb_fd < 0) {
++        return -1;
++    }
++    bb_pin = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, bb_fd, 0x70003000);
++    bb_gpio = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, bb_fd, 0x6000D000);
++    if (bb_pin == MAP_FAILED || bb_gpio == MAP_FAILED) {
++        return -1;
++    }
++    bb_claim();
++    static int hooked;
++    if (!hooked) {
++        atexit(bb_shutdown);
++        hooked = 1;
++    }
++    return 0;
++}
++
++static void bb_shutdown(void) {
++    bb_release_pins();
++    if (bb_pin != NULL && bb_pin != MAP_FAILED) {
++        munmap((void *)bb_pin, 0x1000);
++    }
++    if (bb_gpio != NULL && bb_gpio != MAP_FAILED) {
++        munmap((void *)bb_gpio, 0x1000);
++    }
++    bb_pin = NULL;
++    bb_gpio = NULL;
++    if (bb_fd >= 0) {
++        close(bb_fd);
++        bb_fd = -1;
++    }
++}
++
++static void bb_xfer(const uint8_t *tx, uint8_t *rx, int len) {
++    int n, b;
++    bb_out(2, 0);
++    bb_out(3, 0);
++    for (n = 0; n < len; ++n) {
++        uint8_t acc = 0;
++        uint8_t byte = tx ? tx[n] : 0;
++        for (b = 7; b >= 0; --b) {
++            bb_out(0, (byte >> b) & 1);
++            bb_delay();
++            bb_out(2, 1);
++            acc = (uint8_t)((acc << 1) | (uint8_t)bb_miso());
++            bb_delay();
++            bb_out(2, 0);
++        }
++        if (rx) {
++            rx[n] = acc;
++        }
++    }
++    bb_delay();
++    bb_out(3, 1);
++}
++
+ /* -------------------------------------------------------------------------- */
+ /* --- PUBLIC FUNCTIONS DEFINITION ------------------------------------------ */
+ 
+@@ -127,6 +247,12 @@
+ 
+     *spi_device = dev;
+     *com_target_ptr = (void *)spi_device;
++    if (bb_init() != 0) {
++        DEBUG_MSG("ERROR: JETSON SPI BITBANG INIT FAILED\n");
++        close(dev);
++        free(spi_device);
++        return LGW_SPI_ERROR;
++    }
+     DEBUG_MSG("Note: SPI port opened and configured ok\n");
+     return LGW_SPI_SUCCESS;
+ }
+@@ -143,6 +269,7 @@
+ 
+     /* close file & deallocate file descriptor */
+     spi_device = *(int *)com_target; /* must check that spi_target is not null beforehand */
++    bb_shutdown();
+     a = close(spi_device);
+     free(com_target);
+ 
+@@ -185,7 +312,10 @@
+     k.speed_hz = SPI_SPEED;
+     k.cs_change = 0;
+     k.bits_per_word = 8;
+-    a = ioctl(spi_device, SPI_IOC_MESSAGE(1), &k);
++    (void)spi_device;
++    (void)k;
++    bb_xfer(out_buf, NULL, command_size);
++    a = command_size;
+ 
+     /* determine return code */
+     if (a != (int)k.len) {
+@@ -228,7 +358,10 @@
+     k.rx_buf = (unsigned long) in_buf;
+     k.len = command_size;
+     k.cs_change = 0;
+-    a = ioctl(spi_device, SPI_IOC_MESSAGE(1), &k);
++    (void)spi_device;
++    (void)k;
++    bb_xfer(out_buf, in_buf, command_size);
++    a = command_size;
+ 
+     /* determine return code */
+     if (a != (int)k.len) {
+@@ -302,7 +435,16 @@
+         offset = i * LGW_BURST_CHUNK;
+         k[1].tx_buf = (unsigned long)(data + offset);
+         k[1].len = chunk_size;
+-        byte_transfered += (ioctl(spi_device, SPI_IOC_MESSAGE(2), &k) - k[0].len );
++        {
++            uint8_t frame[8 + 1024];
++            if ((command_size + chunk_size) > (int)sizeof(frame)) {
++                return LGW_SPI_ERROR;
++            }
++            memcpy(frame, command, command_size);
++            memcpy(frame + command_size, data + offset, chunk_size);
++            bb_xfer(frame, NULL, command_size + chunk_size);
++            byte_transfered += chunk_size;
++        }
+         DEBUG_PRINTF("BURST WRITE: to trans %d # chunk %d # transferred %d \n", size_to_do, chunk_size, byte_transfered);
+         size_to_do -= chunk_size; /* subtract the quantity of data already transferred */
+     }
+@@ -358,7 +500,19 @@
+         offset = i * LGW_BURST_CHUNK;
+         k[1].rx_buf = (unsigned long)(data + offset);
+         k[1].len = chunk_size;
+-        byte_transfered += (ioctl(spi_device, SPI_IOC_MESSAGE(2), &k) - k[0].len );
++        {
++            uint8_t tx[8 + 1024];
++            uint8_t rx[8 + 1024];
++            int total = command_size + chunk_size;
++            if (total > (int)sizeof(tx)) {
++                return LGW_SPI_ERROR;
++            }
++            memset(tx, 0, total);
++            memcpy(tx, command, command_size);
++            bb_xfer(tx, rx, total);
++            memcpy(data + offset, rx + command_size, chunk_size);
++            byte_transfered += chunk_size;
++        }
+         DEBUG_PRINTF("BURST READ: to trans %d # chunk %d # transferred %d \n", size_to_do, chunk_size, byte_transfered);
+         size_to_do -= chunk_size;  /* subtract the quantity of data already transferred */
+     }

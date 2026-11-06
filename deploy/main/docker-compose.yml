@@ -1,0 +1,76 @@
+# ChirpStack v4 + Mosquitto for Remote Monitor Lab (US915)
+# Bind to LAN so the Jetson packet forwarder can reach gateway-bridge :1700
+
+name: rmlab
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chirpstack
+      POSTGRES_PASSWORD: chirpstack
+      POSTGRES_DB: chirpstack
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 300 1 --save 60 100 --appendonly no
+    volumes:
+      - redis:/data
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ../../configs/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  chirpstack:
+    image: chirpstack/chirpstack:4
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack"]
+    depends_on:
+      - postgres
+      - mosquitto
+      - redis
+    ports:
+      - "8081:8080"
+    volumes:
+      - ../../configs/chirpstack:/etc/chirpstack:ro
+    environment:
+      - MQTT_BROKER_HOST=mosquitto
+      - REDIS_HOST=redis
+      - POSTGRESQL_HOST=postgres
+
+  chirpstack-gateway-bridge:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    ports:
+      - "1700:1700/udp"
+    volumes:
+      - ../../configs/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:ro
+
+  chirpstack-rest-api:
+    image: chirpstack/chirpstack-rest-api:4
+    restart: unless-stopped
+    depends_on:
+      - chirpstack
+    ports:
+      - "8091:8090"
+    command:
+      - --server
+      - chirpstack:8080
+      - --bind
+      - 0.0.0.0:8090
+      - --insecure
+
+volumes:
+  postgres:
+  redis:

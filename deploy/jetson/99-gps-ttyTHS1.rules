@@ -1,0 +1,2 @@
+# ttyTHS1 is the Waveshare L76K. ModemManager must not probe it.
+KERNEL=="ttyTHS1", ENV{ID_MM_DEVICE_IGNORE}="1"

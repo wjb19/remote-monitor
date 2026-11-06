@@ -1,0 +1,17 @@
+[Unit]
+Description=Remote Monitor Lab SX1302 Semtech UDP Packet Forwarder
+After=network-online.target rmlab-jetson-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/bill/sx1302_hal/packet_forwarder
+ExecStartPre=/usr/bin/python3 /opt/rmlab/deploy/jetson/reset_lgw_jetson.py start
+ExecStart=/home/bill/sx1302_hal/packet_forwarder/lora_pkt_fwd -c /etc/rmlab/global_conf.json
+ExecStopPost=/usr/bin/python3 /opt/rmlab/deploy/jetson/reset_lgw_jetson.py stop
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

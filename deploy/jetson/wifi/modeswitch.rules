@@ -1,0 +1,4 @@
+# The RTL8852BU stick enumerates as a virtual CD (0bda:1a2b) until it is ejected.
+# The stock usb_modeswitch rules do not list this id, so the config file alone
+# never runs.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="1a2b", RUN+="/usr/sbin/usb_modeswitch -v 0bda -p 1a2b -K"

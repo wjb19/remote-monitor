@@ -9,9 +9,9 @@ User=bill
 Group=bill
 WorkingDirectory=/opt/rmlab
 Environment=RMLAB_PORT=8090
-Environment=RMLAB_MAIN_URL=http://192.168.1.14:8080
-Environment=RMLAB_MQTT_HOST=192.168.1.14
-Environment=RMLAB_GATEWAY_SERVER=192.168.1.14
+# Leave MAIN/MQTT/GATEWAY unset (or set to "auto") so hub_discover follows DHCP.
+Environment=RMLAB_HUB_HOSTNAME=bill-GB-BXBT-1900
+Environment=RMLAB_HUB_PEER_PATH=/opt/rmlab/data/hub_peer.json
 ExecStart=/usr/bin/python3 /opt/rmlab/services/jetson_agent/main.py
 Restart=on-failure
 RestartSec=5

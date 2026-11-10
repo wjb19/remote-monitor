@@ -14,6 +14,10 @@ SENSOR_METRICS = (
     ("temperature_c", "node.temperature_c"),
     ("vdd_v", "node.vdd_v"),
     ("humidity_pct", "node.humidity_pct"),
+    ("mq2_mv", "node.mq2_mv"),
+    ("mq8_mv", "node.mq8_mv"),
+    ("mq135_mv", "node.mq135_mv"),
+    ("mq5_mv", "node.mq5_mv"),
 )
 
 

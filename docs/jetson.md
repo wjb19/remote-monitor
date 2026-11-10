@@ -1,20 +1,23 @@
 # Jetson Nano bring-up
 
-The board is `bill-desktop`, user `bill`, kernel `4.9.337-tegra`. SSH from the hub is the `jetson` alias: `bill@192.168.1.19`. The host key is ED25519 `SHA256:PdvLYPCdAkKMV+bGFvAWplsgX9iAfbSSKI8MVNVtRUE`. `sudo -n` works for `bill`. `192.168.1.16` and `192.168.1.5` are not this board.
+The board is `bill-desktop`, user `bill`, kernel `4.9.337-tegra`. SSH from the hub is the `jetson` alias (HostName follows the current DHCP lease; prefer IP over flaky mDNS). `sudo -n` works for `bill`.
 
-The hub is `192.168.1.14` on Wi-Fi `NETGEAR41`. The Jetson reaches it over `wlan0`. The dashboard and API are `http://192.168.1.14:8080` (`GET /health`). ChirpStack is on port 8081. Gateway UDP is `192.168.1.14:1700`.
+Wi-Fi DHCP moves both the hub and the Nano. As of Nov 2026 the hub was often `192.168.1.22` and the Nano around `.29`. Do not hard-code those. The Jetson agent runs `hub_discover` (LAN scan for core `/health`) and rewrites the packet-forwarder `server_address` when the hub IP changes. The hub runs `JetsonLocator` the other way.
 
-Deploy from the hub with `./scripts/deploy-jetson.sh`. That syncs this tree to `/opt/rmlab`, installs `/etc/rmlab/global_conf.json`, and restarts `rmlab-jetson-agent` and `rmlab-lora-pkt-fwd`. Wi-Fi and the direct Ethernet address are a separate step, `deploy/jetson/setup-wifi.sh`. The passphrase is read from the hub's saved `NETGEAR41` profile and is not stored in this repo.
+Deploy from the hub with `./scripts/deploy-jetson.sh`. That syncs this tree to `/opt/rmlab`, installs `/etc/rmlab/global_conf.json`, and restarts `rmlab-jetson-agent` and `rmlab-lora-pkt-fwd`. Wi-Fi setup is a separate step, `deploy/jetson/setup-wifi.sh`. The passphrase is read from the hub's saved `NETGEAR41` profile and is not stored in this repo.
+
+LoRa-E5 USB edge-node bring-up (ADS1115 + MQ sensors) is documented in [lora-e5.md](lora-e5.md).
 
 ## What is running
 
-| Unit | State on 24 Oct 2026 | Role |
-|------|----------------------|------|
-| `rmlab-jetson-agent` | enabled, active | Headless agent on port 8090 |
-| `rmlab-lora-pkt-fwd` | enabled, active | SX1302 packet forwarder |
-| `rmlab-direct-link` | enabled, active | Path to the TK1 over `eth0` |
-| `gps-rx-mark` | disabled, inactive | Would release header pin 8. Left off. |
-| `nvgetty` | disabled, inactive | Stock script would put a getty on `ttyTHS1` |
+| Unit | Role |
+|------|------|
+| `rmlab-jetson-agent` | Headless agent on port 8090 (voltage, thermal, motion, LoRa-E5 USB, hub discover) |
+| `rmlab-lora-pkt-fwd` | SX1302 packet forwarder |
+| `rmlab-direct-link` | `eth0` addressing / forwarding toward the TK1 |
+| `rmlab-tk1-dhcp` | dnsmasq DHCP/DNS for `192.168.8.0/24` (TK1 reserved at `.2`) |
+| `gps-rx-mark` | disabled — would release header pin 8 |
+| `nvgetty` | disabled — stock getty on `ttyTHS1` |
 
 `bill` is in `dialout`. `/dev/ttyTHS1` is `root:dialout` mode `0660`.
 
@@ -35,17 +38,22 @@ NetworkManager connection `NETGEAR41` (UUID `28961e14-a8a8-4cf0-847e-a1ea1efa4f4
 
 ## Ethernet toward the TK1
 
-`eth0` MAC is `00:04:4b:eb:00:51`.
+`eth0` MAC is `00:04:4b:eb:00:51`. The lab standard is a **point-to-point** link:
 
-`Wired connection 1` (UUID `a3ab28c0-254c-3175-8a7b-6c17eeb89dbc`) is the saved profile `192.168.8.1/24`, `never-default`, copied from `deploy/jetson/wifi/eth0.nmconnection`. It was not the active connection when this was written. The active `eth0` profile is a manual `192.168.1.17/32`.
+| Host | Address |
+|------|---------|
+| Jetson `eth0` | `192.168.8.1/24` (`never-default`) |
+| TK1 `eth0` | `192.168.8.2/24`, gateway `192.168.8.1` |
 
-`rmlab-direct-link.service` runs `/usr/local/sbin/rmlab-direct-link.sh` (`deploy/jetson/direct-link.sh`). It adds `192.168.1.17/32` on `eth0` and a route to `192.168.1.18/32`, turns on forwarding and proxy ARP, and masquerades that one address (and `192.168.8.0/24`) out `wlan0`. Do not add a connected route for `192.168.1.0/24` on `eth0` while `wlan0` is the uplink. The `/32` is the whole point: the house subnet stays on Wi-Fi.
+`Wired connection 1` (UUID `a3ab28c0-254c-3175-8a7b-6c17eeb89dbc`) is the saved Nano profile from `deploy/jetson/wifi/eth0.nmconnection`. `rmlab-direct-link.service` runs `deploy/jetson/direct-link.sh`: ensures `.8.1`, enables forwarding, and masquerades `192.168.8.0/24` out `wlan0`. `rmlab-tk1-dhcp` (`deploy/jetson/dnsmasq-tk1.conf`) can reserve `.2` for the TK1 MAC.
 
-The TK1 did not answer `192.168.1.18` or `192.168.8.2` from the hub or from the Jetson while this page was written.
+Do not put the house `192.168.1.0/24` as a connected route on `eth0` while `wlan0` is the uplink.
+
+Ambient board temperature on the Nano uses **AO-therm** (`jetson.tboard_c`), furthest from the CPU / closest onboard proxy to room air. CPU contrast is `jetson.tcpu_c`.
 
 ## LoRaWAN gateway
 
-The HAT is the Waveshare SX1302/SX1303 LoRaWAN Gateway HAT. The concentrator answered chip id `0016C001F11F5052`. `lora_pkt_fwd` runs from `/home/bill/sx1302_hal/packet_forwarder` with `/etc/rmlab/global_conf.json`. The repo copy is `deploy/jetson/global_conf.json`. `gps_tty_path` is `/dev/ttyTHS1`. Gateway id, server `192.168.1.14`, and UDP port 1700 are in that file.
+The HAT is the Waveshare SX1302/SX1303 LoRaWAN Gateway HAT. The concentrator answered chip id `0016C001F11F5052`. `lora_pkt_fwd` runs from `/home/bill/sx1302_hal/packet_forwarder` with `/etc/rmlab/global_conf.json`. The repo copy is `deploy/jetson/global_conf.json`. `gps_tty_path` is `/dev/ttyTHS1`. Gateway id and UDP port 1700 are in that file; `server_address` is kept aligned with the hub by `hub_discover`.
 
 Header SPI on this Nano is not a live MMIO block. Do not map `0x7000d400`. `deploy/jetson/reset_lgw_jetson.py` writes the pinmux at `0x70003000` (PC0–PC3, offsets `0x50`, `0x54`, `0x58`, `0x5C`) and drives Jetson.GPIO BOARD pins:
 

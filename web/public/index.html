@@ -4,92 +4,247 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Remote Monitor Lab</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <main>
-    <header>
-      <p class="brand">Remote Monitor Lab</p>
-      <h1>Field station</h1>
-      <p class="lede">Live cameras, circular buffers, and edge status.</p>
+  <div class="shell">
+    <header class="top">
+      <div>
+        <p class="brand">Remote Monitor Lab</p>
+        <h1>Field station</h1>
+      </div>
+      <p class="lede" id="header-status">Loading…</p>
     </header>
 
-    <section class="panel">
-      <h2>Cameras</h2>
+    <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+      <button type="button" class="tab active" data-tab="series" role="tab" aria-selected="true">Time series</button>
+      <button type="button" class="tab" data-tab="cameras" role="tab" aria-selected="false">Cameras</button>
+      <button type="button" class="tab" data-tab="jetson" role="tab" aria-selected="false">Jetson</button>
+      <button type="button" class="tab" data-tab="tk1" role="tab" aria-selected="false">TK1</button>
+      <button type="button" class="tab" data-tab="map" role="tab" aria-selected="false">Map &amp; GPS</button>
+      <button type="button" class="tab" data-tab="config" role="tab" aria-selected="false">Alerts &amp; config</button>
+    </nav>
+
+    <section id="tab-series" class="tab-panel active" role="tabpanel">
+      <div class="panel-head">
+        <h2>Time series</h2>
+        <p class="muted">All stored telemetry metrics from the hub, Jetson, TK1, and LoRa nodes.</p>
+      </div>
+      <div id="ambient-cards" class="cards ambient-strip" aria-live="polite">
+        <p class="loading">Loading ambient temperatures…</p>
+      </div>
+      <div class="toolbar">
+        <label>Layout
+          <select id="series-layout">
+            <option value="single">Single metric</option>
+            <option value="matrix">All metrics (matrix)</option>
+          </select>
+        </label>
+        <label id="series-metric-wrap">Metric
+          <select id="series-metric"></select>
+        </label>
+        <label id="series-cols-wrap" hidden>Columns
+          <select id="series-cols">
+            <option value="1">1</option>
+            <option value="2" selected>2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <label id="series-rows-wrap" hidden>Max rows
+          <select id="series-rows">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="6">6</option>
+            <option value="8">8</option>
+            <option value="0">All</option>
+          </select>
+        </label>
+        <label>Window
+          <select id="series-window">
+            <option value="3600">1 hour</option>
+            <option value="21600">6 hours</option>
+            <option value="86400" selected>24 hours</option>
+            <option value="604800">7 days</option>
+            <option value="2592000">30 days</option>
+          </select>
+        </label>
+        <button type="button" id="series-refresh">Refresh</button>
+      </div>
+      <div id="series-single">
+        <canvas id="series-chart" width="1100" height="320" aria-label="Telemetry chart"></canvas>
+        <div id="series-meta" class="muted"></div>
+      </div>
+      <div id="series-matrix" class="series-matrix" hidden></div>
+      <div id="series-matrix-meta" class="muted" hidden></div>
+    </section>
+
+    <section id="tab-cameras" class="tab-panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Cameras</h2>
+        <p class="muted">Live feeds and ring buffers on the hub.</p>
+      </div>
       <div id="cameras" class="camera-grid"><p class="loading">Loading cameras…</p></div>
+      <div class="panel-head" style="margin-top:2rem">
+        <h2>Motion windows</h2>
+        <p class="muted">Recent clips uploaded from Jetson and TK1.</p>
+      </div>
+      <div id="edge-events" class="cards"><p class="loading">Loading…</p></div>
     </section>
 
-    <section class="panel">
-      <h2>Edge nodes</h2>
-      <p class="muted">USB LoRa-E5 now, and the same temperature / VDD payload when a node uplinks through the Waveshare gateway.</p>
-      <div id="lora-e5" class="cards"><p class="loading">Loading…</p></div>
-    </section>
-
-    <section class="panel">
-      <h2>Jetson power</h2>
-      <div id="voltage" class="cards"><p class="loading">Loading…</p></div>
-      <div class="scrub" style="margin-top:1rem">
-        <canvas id="voltage-chart" width="1000" height="180" aria-label="Voltage chart"></canvas>
+    <section id="tab-jetson" class="tab-panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Jetson</h2>
+        <p class="muted">Gateway board health, power, radio, and discovery.</p>
       </div>
-      <div class="controls" style="margin-top:0.75rem;max-width:28rem">
-        <label class="ctrl">Low-voltage alert (V)
-          <input id="voltage-min" type="range" min="3.5" max="5.2" step="0.01" value="4.60" />
-          <span class="val" id="voltage-min-val">4.60</span>
-        </label>
-        <div class="btn-row">
-          <button type="button" id="voltage-min-apply">Apply threshold</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>TK1 supply</h2>
-      <p class="muted">Current this board draws from its input. On a shared 12 V battery this is the TK1’s share, not the Jetson’s.</p>
-      <div id="tk1-power" class="cards"><p class="loading">Loading…</p></div>
-      <div class="scrub" style="margin-top:1rem">
-        <canvas id="tk1-current-chart" width="1000" height="180" aria-label="TK1 current chart"></canvas>
-      </div>
-      <p class="muted" style="margin-top:1rem">Tboard_tegra, the sensor on the module. Nearest of the onboard readings to room air.</p>
-      <div class="scrub">
-        <canvas id="tk1-tboard-chart" width="1000" height="180" aria-label="TK1 board temperature chart"></canvas>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Motion windows</h2>
-      <p class="muted">Motion starts a clip. Each board identifies objects in that clip, sends the frames here, and adds up to two 16:9 stills framed on those objects. Pre-roll is kept in memory; post-roll is how long recording continues. The sliders apply to the Jetson. The TK1 uses the same window and adds the camera microphone.</p>
-      <div class="controls" style="max-width:36rem">
-        <label class="ctrl">Pre-roll (s)
-          <input id="motion-pre" type="range" min="0" max="10" step="0.5" value="2" />
-          <span class="val" id="motion-pre-val">2.0</span>
-        </label>
-        <label class="ctrl">Post-roll (s)
-          <input id="motion-post" type="range" min="0.5" max="20" step="0.5" value="4" />
-          <span class="val" id="motion-post-val">4.0</span>
-        </label>
-        <label class="ctrl">Threshold
-          <input id="motion-threshold" type="range" min="1" max="40" step="0.5" value="12" />
-          <span class="val" id="motion-threshold-val">12.0</span>
-        </label>
-        <div class="btn-row">
-          <button type="button" id="motion-apply">Apply window</button>
-          <span class="muted" id="motion-status"></span>
-        </div>
-      </div>
-      <div id="edge-events" class="cards" style="margin-top:1rem"><p class="loading">Loading…</p></div>
-    </section>
-
-    <section class="panel">
-      <h2>System</h2>
-      <div id="cards" class="cards" aria-live="polite">
-        <p class="loading">Loading…</p>
-      </div>
-      <div class="btn-row">
+      <div class="btn-row" style="margin-bottom:1rem">
         <button type="button" id="jetson-discover">Search for Jetson</button>
         <span class="muted" id="jetson-discover-status"></span>
       </div>
+      <div id="jetson-cards" class="cards"><p class="loading">Loading…</p></div>
+      <div class="scrub" style="margin-top:1rem">
+        <canvas id="voltage-chart" width="1100" height="200" aria-label="Voltage chart"></canvas>
+      </div>
+      <div class="chart-caption">
+        <p class="muted">Ambient board temp (AO-therm) vs CPU — AO is furthest from the CPU / closest onboard proxy to room air.</p>
+        <p class="chart-legend"><span class="swatch ambient"></span> AO-therm <span class="swatch cpu"></span> CPU-therm</p>
+      </div>
+      <div class="scrub">
+        <canvas id="jetson-tboard-chart" width="1100" height="180" aria-label="Jetson board temperature chart"></canvas>
+      </div>
+      <div id="lora-e5" class="cards" style="margin-top:1.25rem"></div>
     </section>
-  </main>
+
+    <section id="tab-tk1" class="tab-panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>TK1</h2>
+        <p class="muted">Motion board health, supply current, and temperature.</p>
+      </div>
+      <div id="tk1-cards" class="cards"><p class="loading">Loading…</p></div>
+      <div class="scrub" style="margin-top:1rem">
+        <canvas id="tk1-current-chart" width="1100" height="180" aria-label="TK1 current chart"></canvas>
+      </div>
+      <div class="chart-caption">
+        <p class="muted">Ambient board temp (Tboard_tegra / NCT72) vs CPU — furthest from the CPU / closest onboard proxy to room air.</p>
+        <p class="chart-legend"><span class="swatch ambient"></span> Tboard_tegra <span class="swatch cpu"></span> CPU-therm</p>
+      </div>
+      <div class="scrub">
+        <canvas id="tk1-tboard-chart" width="1100" height="180" aria-label="TK1 board temperature chart"></canvas>
+      </div>
+    </section>
+
+    <section id="tab-map" class="tab-panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Map &amp; GPS</h2>
+        <p class="muted">OpenStreetMap centers on the LoRa gateway GPS fix when one is available; field notes stay as markers on top.</p>
+      </div>
+      <div class="map-layout">
+        <div id="map" class="map" aria-label="OpenStreetMap field view"></div>
+        <aside class="map-side">
+          <h3>Add / edit feature</h3>
+          <form id="feature-form" class="stack-form">
+            <input type="hidden" id="feature-id" value="" />
+            <label>Name <input id="feature-name" required maxlength="120" /></label>
+            <label>Type
+              <select id="feature-type">
+                <option value="spring">Spring</option>
+                <option value="sensor">Sensor</option>
+                <option value="camera">Camera</option>
+                <option value="gateway">Gateway</option>
+                <option value="water">Water</option>
+                <option value="trail">Trail</option>
+                <option value="interest" selected>Point of interest</option>
+                <option value="hazard">Hazard</option>
+                <option value="camp">Camp</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>Latitude <input id="feature-lat" type="number" step="any" required /></label>
+            <label>Longitude <input id="feature-lon" type="number" step="any" required /></label>
+            <label>Description
+              <textarea id="feature-desc" rows="4" maxlength="4000" placeholder="Location notes, access, what to monitor…"></textarea>
+            </label>
+            <p class="muted tiny">Click the map to fill coordinates. Drag a saved marker to move it.</p>
+            <div class="btn-row">
+              <button type="submit">Save feature</button>
+              <button type="button" id="feature-clear" class="ghost">Clear</button>
+              <button type="button" id="feature-delete" class="danger" hidden>Delete</button>
+              <button type="button" id="feature-use-gps">Use latest GPS</button>
+            </div>
+            <p class="muted" id="feature-status"></p>
+          </form>
+          <h3>Saved features</h3>
+          <div id="feature-list" class="feature-list"><p class="muted">None yet.</p></div>
+          <h3>Latest GPS</h3>
+          <div id="gps-latest" class="muted">—</div>
+          <div class="btn-row" style="margin-top:0.65rem">
+            <button type="button" id="map-recenter-gps" class="ghost">Recenter on GPS</button>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="tab-config" class="tab-panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Alerts &amp; config</h2>
+        <p class="muted">Thresholds, motion triggers, and notification endpoints.</p>
+      </div>
+      <div class="config-grid">
+        <article class="card">
+          <h3>Voltage alert</h3>
+          <label class="ctrl">Low-voltage (V)
+            <input id="voltage-min" type="range" min="3.5" max="5.2" step="0.01" value="4.60" />
+            <span class="val" id="voltage-min-val">4.60</span>
+          </label>
+          <div class="btn-row">
+            <button type="button" id="voltage-min-apply">Apply threshold</button>
+          </div>
+        </article>
+        <article class="card">
+          <h3>Notifications</h3>
+          <label class="stack-label">Webhook URL
+            <input id="notify-webhook" type="url" placeholder="https://…" />
+          </label>
+          <label class="stack-label">Email
+            <input id="notify-email" type="email" placeholder="ops@example.com" />
+          </label>
+          <div class="btn-row">
+            <button type="button" id="notify-apply">Save notification settings</button>
+          </div>
+          <p class="muted tiny">Stored on the hub. Delivery hooks can be wired next; values persist in alert config.</p>
+        </article>
+        <article class="card">
+          <h3>Motion window (Jetson)</h3>
+          <label class="ctrl">Pre-roll (s)
+            <input id="motion-pre" type="range" min="0" max="10" step="0.5" value="2" />
+            <span class="val" id="motion-pre-val">2.0</span>
+          </label>
+          <label class="ctrl">Post-roll (s)
+            <input id="motion-post" type="range" min="0.5" max="20" step="0.5" value="4" />
+            <span class="val" id="motion-post-val">4.0</span>
+          </label>
+          <label class="ctrl">Threshold
+            <input id="motion-threshold" type="range" min="1" max="40" step="0.5" value="12" />
+            <span class="val" id="motion-threshold-val">12.0</span>
+          </label>
+          <div class="btn-row">
+            <button type="button" id="motion-apply">Apply window</button>
+            <span class="muted" id="motion-status"></span>
+          </div>
+        </article>
+      </div>
+      <div class="panel-head" style="margin-top:1.5rem">
+        <h2>Recent alerts</h2>
+      </div>
+      <div id="alerts-list" class="cards"><p class="loading">Loading…</p></div>
+    </section>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

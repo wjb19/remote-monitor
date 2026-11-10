@@ -1,9 +1,8 @@
 """Seeed LoRa-E5 (Wio-E5) USB-UART node helper.
 
-This module talks AT over the CP2102N USB serial link. The attached board
-currently reports onboard temperature (AT+TEMP). Future same-model boards can
-publish additional sensors via a small payload profile without changing the
-harvester loop.
+Talks AT over the CP2102N USB serial link. Stock firmware only has TEMP/VDD.
+Custom rmlab-gas firmware adds AT+GAS for ADS1115 channels:
+  A0 MQ-2, A1 MQ-8, A2 MQ-135, A3 MQ-5
 """
 
 import os
@@ -40,7 +39,8 @@ class LoRaE5Node(object):
             "identity": {},
             "last_sample": None,
             "samples": 0,
-            "profile": "temp_v1",  # extensible: temp_humi_v1, multi_v1, ...
+            "profile": "temp_v1",
+            "gas_available": False,
             "tx_enabled": env("RMLAB_LORA_E5_TX", "0") != "0",
             "last_tx": None,
             "last_tx_error": None,
@@ -75,6 +75,7 @@ class LoRaE5Node(object):
             ("AT+DR=SCHEME", "dr"),
             ("AT+MODE", "mode"),
             ("AT+VDD", "vdd"),
+            ("AT+GAS", "gas"),
         ):
             try:
                 resp = ser.command(cmd, wait=1.2)
@@ -82,6 +83,14 @@ class LoRaE5Node(object):
             except Exception as exc:
                 identity[key] = "error: %s" % exc
         self.state["identity"] = identity
+        gas = identity.get("gas") or ""
+        self.state["gas_available"] = "+GAS:" in gas and "ERROR" not in gas.upper()
+        if self.state["gas_available"]:
+            self.state["profile"] = "gas_ads1115_v1"
+        elif "rmlab-gas" in (identity.get("ver") or "").lower():
+            self.state["profile"] = "gas_ads1115_v1"
+        else:
+            self.state["profile"] = "temp_v1"
         # basic liveness: AT should contain OK
         at = identity.get("at") or ""
         if "OK" not in at and "+AT" not in at.upper():
@@ -103,10 +112,38 @@ class LoRaE5Node(object):
             return None, resp.strip()
         return float(m.group(1)), resp.strip()
 
+    def read_gas(self, ser):
+        """Parse +GAS: mq2_mv=..,mq8_mv=..,mq135_mv=..,mq5_mv=.."""
+        resp = ser.command("AT+GAS", wait=2.0)
+        text = resp.strip()
+        if "+GAS:" not in text or "ERROR" in text.upper():
+            return None, text
+        body = text.split("+GAS:", 1)[1].strip()
+        out = {}
+        for part in body.split(","):
+            if "=" not in part:
+                continue
+            key, raw = part.split("=", 1)
+            key = key.strip().lower()
+            try:
+                out[key] = float(raw.strip())
+            except ValueError:
+                continue
+        needed = ("mq2_mv", "mq8_mv", "mq135_mv", "mq5_mv")
+        if not all(k in out for k in needed):
+            return None, text
+        return out, text
+
     def collect_sample(self, ser):
-        """Collect sensors for this node profile. Extend here for richer boards."""
+        """Collect sensors for this node profile."""
         temp_c, temp_raw = self.read_temperature(ser)
         vdd_v, vdd_raw = self.read_vdd(ser)
+        gas, gas_raw = (None, None)
+        if self.state.get("gas_available") or self.state.get("profile") == "gas_ads1115_v1":
+            gas, gas_raw = self.read_gas(ser)
+            if gas:
+                self.state["gas_available"] = True
+                self.state["profile"] = "gas_ads1115_v1"
         sample = {
             "ts": time.time(),
             "node_id": self.node_id,
@@ -121,9 +158,15 @@ class LoRaE5Node(object):
         }
         if vdd_v is not None:
             sample["sensors"]["vdd_v"] = vdd_v
-        sample["payload_hex"] = lora_payload.encode_hex(
-            temp_c, vdd_v, sample["sensors"].get("humidity_pct")
-        )
+        if gas_raw:
+            sample["raw"]["gas"] = gas_raw
+        if gas:
+            sample["sensors"].update(gas)
+            sample["payload_hex"] = lora_payload.encode_hex(temp_c, vdd_v, gas_mv=gas)
+        else:
+            sample["payload_hex"] = lora_payload.encode_hex(
+                temp_c, vdd_v, sample["sensors"].get("humidity_pct")
+            )
         return sample
 
     def maybe_transmit(self, ser, sample):

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
+import socket
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -20,7 +22,7 @@ sys.path.insert(0, str(ROOT / "packages"))
 sys.path.insert(0, str(ROOT / "services"))
 
 from camera.manager import CameraManager  # noqa: E402
-from core.jetson_discover import JetsonLocator  # noqa: E402
+from core.jetson_discover import JetsonLocator, primary_lan_ipv4  # noqa: E402
 from core.mqtt_ingest import run_mqtt_ingest  # noqa: E402
 from core.telemetry_store import TelemetryStore  # noqa: E402
 from rmlab_shared.settings import MainSettings  # noqa: E402
@@ -38,6 +40,38 @@ STARTED = time.time()
 WEB = ROOT / "web" / "public"
 EDGE_DIR = settings.data_root / "edge_events"
 EDGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def advertise_host() -> str:
+    """LAN address edge nodes should use; follows DHCP on this hub."""
+    configured = str(settings.main_advertise_host or "").strip()
+    if configured and configured.lower() not in ("auto", "discover", "dhcp"):
+        # Still prefer a live LAN IP when the configured one is stale/missing.
+        live = primary_lan_ipv4()
+        if live and configured != live:
+            return live
+        return configured
+    return primary_lan_ipv4() or socket.gethostname()
+
+
+def hub_disk() -> dict:
+    try:
+        usage = shutil.disk_usage(str(settings.data_root.resolve()))
+        total = float(usage.total)
+        free = float(usage.free)
+        used = float(usage.used)
+        return {
+            "ok": True,
+            "path": str(settings.data_root.resolve()),
+            "total_bytes": int(total),
+            "free_bytes": int(free),
+            "used_bytes": int(used),
+            "used_pct": round((used / total) * 100.0, 1) if total else None,
+            "free_gb": round(free / (1024.0**3), 2),
+            "total_gb": round(total / (1024.0**3), 2),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def store_edge_jpeg(data: bytes, meta: dict) -> tuple[int, str]:
@@ -101,6 +135,28 @@ class TelemetryPoints(BaseModel):
 class AlertConfigPatch(BaseModel):
     voltage_min_v: float | None = Field(default=None, ge=3.0, le=6.0)
     voltage_alert_cooldown_s: int | None = Field(default=None, ge=30, le=86400)
+    notify_webhook_url: str | None = None
+    notify_email: str | None = None
+
+
+class MapFeatureBody(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default="", max_length=4000)
+    marker_type: str = Field(default="interest", min_length=1, max_length=40)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    altitude_m: float | None = None
+    meta: dict | None = None
+
+
+class MapFeaturePatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=4000)
+    marker_type: str | None = Field(default=None, min_length=1, max_length=40)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    altitude_m: float | None = None
+    meta: dict | None = None
 
 
 class MotionConfigPatch(BaseModel):
@@ -149,9 +205,12 @@ async def _probe(url: str, timeout: float = 2.0) -> dict:
 
 @app.get("/health")
 async def health() -> dict:
+    host = advertise_host()
     return {
         "ok": True,
         "service": "core",
+        "hostname": socket.gethostname(),
+        "advertise_host": host,
         "uptime_s": round(time.time() - STARTED, 1),
         "region": settings.region,
         "cameras": len(camera_manager.list()),
@@ -165,13 +224,16 @@ async def status() -> dict:
         _probe(f"{settings.chirpstack_url.rstrip('/')}/"),
     )
     cams = camera_manager.list()
+    host = advertise_host()
     return {
         "main": {
             "ok": True,
-            "advertise_host": settings.main_advertise_host,
-            "api": f"http://{settings.main_advertise_host}:{settings.port}",
+            "hostname": socket.gethostname(),
+            "advertise_host": host,
+            "api": f"http://{host}:{settings.port}",
             "uptime_s": round(time.time() - STARTED, 1),
             "region": settings.region,
+            "disk": hub_disk(),
         },
         "jetson": {
             "url": locator.url,
@@ -179,6 +241,10 @@ async def status() -> dict:
             "discovery": locator.snapshot(),
             **jetson_health,
         },
+        "tk1": ((jetson_health.get("body") or {}) if isinstance(jetson_health, dict) else {}).get(
+            "tk1"
+        )
+        or {"ok": False, "error": "jetson offline"},
         "chirpstack": {
             "url": settings.chirpstack_url,
             **chirpstack,
@@ -200,14 +266,26 @@ async def status() -> dict:
         ],
         "telemetry": {
             "jetson_voltage_in": telemetry.latest("jetson.voltage_in"),
+            "jetson_tboard_c": telemetry.latest("jetson.tboard_c"),
+            "jetson_tcpu_c": telemetry.latest("jetson.tcpu_c"),
             "tk1_supply_current_a": telemetry.latest("tk1.supply_current_a"),
             "tk1_supply_voltage_v": telemetry.latest("tk1.supply_voltage_v"),
             "tk1_supply_power_w": telemetry.latest("tk1.supply_power_w"),
             "tk1_tboard_c": telemetry.latest("tk1.tboard_c"),
+            "tk1_tcpu_c": telemetry.latest("tk1.tcpu_c"),
             "lora_e5_temperature_c": telemetry.latest("lora_e5.temperature_c"),
             "lora_e5_vdd_v": telemetry.latest("lora_e5.vdd_v"),
             "nodes": telemetry.latest_per_node(
-                ["node.temperature_c", "node.vdd_v", "node.humidity_pct", "node.uplink"]
+                [
+                    "node.temperature_c",
+                    "node.vdd_v",
+                    "node.humidity_pct",
+                    "node.mq2_mv",
+                    "node.mq8_mv",
+                    "node.mq135_mv",
+                    "node.mq5_mv",
+                    "node.uplink",
+                ]
             ),
             "gateway_rx": telemetry.latest("gateway.rx"),
             "gateway_rssi": telemetry.latest("gateway.rssi"),
@@ -233,6 +311,62 @@ async def api_telemetry_series(
     limit: int = Query(default=2000, ge=10, le=20000),
 ) -> dict:
     return {"metric": metric, "points": telemetry.query(metric, since_s=since_s, limit=limit)}
+
+
+@app.get("/api/telemetry/metrics")
+async def api_telemetry_metrics() -> dict:
+    return {"metrics": telemetry.list_metrics()}
+
+
+@app.get("/api/locations")
+async def api_locations(
+    since_s: float = Query(default=86400 * 30, ge=60, le=86400 * 365),
+    limit: int = Query(default=2000, ge=10, le=20000),
+) -> dict:
+    return {
+        "latest": telemetry.latest_location(),
+        "points": telemetry.list_locations(since_s=since_s, limit=limit),
+    }
+
+
+@app.get("/api/map/features")
+async def api_map_features() -> dict:
+    return {
+        "features": telemetry.list_map_features(),
+        "marker_types": [
+            "gateway",
+            "camera",
+            "sensor",
+            "spring",
+            "water",
+            "trail",
+            "interest",
+            "hazard",
+            "camp",
+            "other",
+        ],
+    }
+
+
+@app.post("/api/map/features")
+async def api_map_features_create(body: MapFeatureBody) -> dict:
+    feature = telemetry.add_map_feature(body.model_dump())
+    return {"ok": True, "feature": feature}
+
+
+@app.patch("/api/map/features/{feature_id}")
+async def api_map_features_patch(feature_id: int, body: MapFeaturePatch) -> dict:
+    feature = telemetry.update_map_feature(feature_id, body.model_dump(exclude_none=True))
+    if not feature:
+        raise HTTPException(404, "feature not found")
+    return {"ok": True, "feature": feature}
+
+
+@app.delete("/api/map/features/{feature_id}")
+async def api_map_features_delete(feature_id: int) -> dict:
+    if not telemetry.delete_map_feature(feature_id):
+        raise HTTPException(404, "feature not found")
+    return {"ok": True}
 
 
 @app.get("/api/alerts/config")

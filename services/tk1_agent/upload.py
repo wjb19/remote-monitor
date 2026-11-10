@@ -8,14 +8,20 @@ import uuid
 
 from urllib2 import Request, urlopen
 
+try:
+    import hub_from_jetson
+except Exception:  # pragma: no cover
+    hub_from_jetson = None
+
 
 def env(key, default):
     return os.environ.get(key, default)
 
 
 def _base():
-    # Hub today. Point this at the Jetson once the K1 sits on that network.
-    return env("RMLAB_MAIN_URL", "http://192.168.1.14:8080").rstrip("/")
+    if hub_from_jetson is not None:
+        return hub_from_jetson.main_url().rstrip("/")
+    return env("RMLAB_MAIN_URL", "http://192.168.8.1:8080").rstrip("/")
 
 
 def _post_file(path, field, filename, content_type, payload, meta, timeout):

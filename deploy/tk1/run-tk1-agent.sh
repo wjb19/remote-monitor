@@ -2,7 +2,9 @@
 # User-level launcher. Ubuntu 14.04 on this board has no user systemd.
 ROOT="${RMLAB_ROOT:-$HOME/rmlab}"
 export PYTHONPATH="$ROOT/vendor/usr/lib/python2.7/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
-export RMLAB_MAIN_URL="${RMLAB_MAIN_URL:-http://192.168.1.14:8080}"
+# Leave unset/auto so hub_from_jetson learns the hub via the Jetson.
+export RMLAB_MAIN_URL="${RMLAB_MAIN_URL:-auto}"
+export RMLAB_JETSON_URL="${RMLAB_JETSON_URL:-http://192.168.8.1:8090}"
 export RMLAB_CAMERA_ID="${RMLAB_CAMERA_ID:-tk1-cam0}"
 export RMLAB_PORT="${RMLAB_PORT:-8090}"
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do

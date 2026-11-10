@@ -9,14 +9,24 @@ try:
 except ImportError:  # pragma: no cover
     from urllib2 import Request, urlopen
 
+try:
+    import hub_discover
+except Exception:  # pragma: no cover
+    hub_discover = None
+
 
 def env(key, default):
     return os.environ.get(key, default)
 
 
+def main_base():
+    if hub_discover is not None:
+        return hub_discover.main_url().rstrip("/")
+    return env("RMLAB_MAIN_URL", "http://127.0.0.1:8080").rstrip("/")
+
+
 def post_json(path, payload, timeout=5.0):
-    base = env("RMLAB_MAIN_URL", "http://192.168.1.14:8080").rstrip("/")
-    url = base + path
+    url = main_base() + path
     data = json.dumps(payload).encode("utf-8")
     req = Request(url, data=data, headers={"Content-Type": "application/json"})
     resp = urlopen(req, timeout=timeout)
@@ -31,8 +41,7 @@ def post_multipart_event(jpeg_bytes, meta, timeout=15.0):
     """POST motion event with JPEG attachment (stdlib multipart)."""
     import uuid
 
-    base = env("RMLAB_MAIN_URL", "http://192.168.1.14:8080").rstrip("/")
-    url = base + "/api/edge/events"
+    url = main_base() + "/api/edge/events"
     boundary = "----rmlab%x" % uuid.uuid4().int
     parts = []
     for key, value in meta.items():

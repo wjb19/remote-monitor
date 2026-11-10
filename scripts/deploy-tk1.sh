@@ -16,7 +16,7 @@ set -e
 mkdir -p "$HOME/rmlab/services" "$HOME/rmlab/deploy" "$HOME/rmlab/vendor" "$HOME/rmlab/log"
 rsync -a "$HOME/rmlab-src/tk1_agent/" "$HOME/rmlab/services/tk1_agent/"
 rsync -a "$HOME/rmlab-src/tk1/" "$HOME/rmlab/deploy/tk1/"
-chmod 755 "$HOME/rmlab/deploy/tk1/run-tk1-agent.sh" "$HOME/rmlab/deploy/tk1/update-os.sh" "$HOME/rmlab/deploy/tk1/enable-supply-i2c.sh"
+chmod 755 "$HOME/rmlab/deploy/tk1/"*.sh
 export PYTHONPATH="$HOME/rmlab/vendor/usr/lib/python2.7/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
 if ! python -c "import cv2,numpy" >/dev/null 2>&1; then
   VENDOR="$HOME/rmlab/vendor"

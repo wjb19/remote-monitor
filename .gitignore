@@ -6,3 +6,7 @@ models/
 .env
 *.log
 .DS_Store
+build/
+libdeps/
+.pio/
+.platformio/

@@ -1,0 +1,13 @@
+# interfaces(5) file used by ifup(8) and ifdown(8)
+# Remote Monitor Lab: TK1 is point-to-point with the Jetson Nano.
+# Jetson eth0 = 192.168.8.1, TK1 eth0 = 192.168.8.2 (no switch/router).
+
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 192.168.8.2
+    netmask 255.255.255.0
+    gateway 192.168.8.1
+    dns-nameservers 192.168.8.1

@@ -68,6 +68,20 @@ class TelemetryStore:
                   fix_source TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_locations_ts ON locations(ts);
+
+                CREATE TABLE IF NOT EXISTS map_features (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  created_ts REAL NOT NULL,
+                  updated_ts REAL NOT NULL,
+                  name TEXT NOT NULL,
+                  description TEXT,
+                  marker_type TEXT NOT NULL,
+                  latitude REAL NOT NULL,
+                  longitude REAL NOT NULL,
+                  altitude_m REAL,
+                  meta TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_map_features_type ON map_features(marker_type);
                 """
             )
             # defaults
@@ -231,6 +245,143 @@ class TelemetryStore:
         if row["accuracy_m"] is not None:
             fix["accuracy_m"] = row["accuracy_m"]
         return fix
+
+    def list_locations(self, since_s: float = 86400 * 30, limit: int = 2000) -> list[dict]:
+        cutoff = time.time() - since_s
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ts, source, latitude, longitude, altitude_m, accuracy_m, fix_source
+                FROM locations WHERE ts>=?
+                ORDER BY ts ASC
+                LIMIT ?
+                """,
+                (cutoff, limit),
+            ).fetchall()
+        out = []
+        for row in rows:
+            item = {
+                "ts": row["ts"],
+                "source": row["source"],
+                "latitude": row["latitude"],
+                "longitude": row["longitude"],
+                "fix_source": row["fix_source"] or "GPS",
+            }
+            if row["altitude_m"] is not None:
+                item["altitude_m"] = row["altitude_m"]
+            if row["accuracy_m"] is not None:
+                item["accuracy_m"] = row["accuracy_m"]
+            out.append(item)
+        return out
+
+    def list_metrics(self) -> list[str]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT metric FROM points ORDER BY metric ASC"
+            ).fetchall()
+        return [r["metric"] for r in rows]
+
+    def _feature_row(self, row: sqlite3.Row) -> dict:
+        item = {
+            "id": row["id"],
+            "created_ts": row["created_ts"],
+            "updated_ts": row["updated_ts"],
+            "name": row["name"],
+            "description": row["description"] or "",
+            "marker_type": row["marker_type"],
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+        }
+        if row["altitude_m"] is not None:
+            item["altitude_m"] = row["altitude_m"]
+        try:
+            item["meta"] = json.loads(row["meta"] or "{}")
+        except Exception:
+            item["meta"] = {}
+        return item
+
+    def list_map_features(self) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_ts, updated_ts, name, description, marker_type,
+                       latitude, longitude, altitude_m, meta
+                FROM map_features ORDER BY name ASC, id ASC
+                """
+            ).fetchall()
+        return [self._feature_row(r) for r in rows]
+
+    def get_map_feature(self, feature_id: int) -> dict | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, created_ts, updated_ts, name, description, marker_type,
+                       latitude, longitude, altitude_m, meta
+                FROM map_features WHERE id=?
+                """,
+                (feature_id,),
+            ).fetchone()
+        return self._feature_row(row) if row else None
+
+    def add_map_feature(self, data: dict) -> dict:
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO map_features(
+                  created_ts, updated_ts, name, description, marker_type,
+                  latitude, longitude, altitude_m, meta
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    now,
+                    str(data["name"]).strip(),
+                    (data.get("description") or "").strip(),
+                    str(data.get("marker_type") or "interest").strip(),
+                    float(data["latitude"]),
+                    float(data["longitude"]),
+                    data.get("altitude_m"),
+                    json.dumps(data.get("meta") or {}),
+                ),
+            )
+            feature_id = int(cur.lastrowid)
+        found = self.get_map_feature(feature_id)
+        assert found is not None
+        return found
+
+    def update_map_feature(self, feature_id: int, data: dict) -> dict | None:
+        current = self.get_map_feature(feature_id)
+        if not current:
+            return None
+        merged = dict(current)
+        merged.update({k: v for k, v in data.items() if v is not None})
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE map_features SET
+                  updated_ts=?, name=?, description=?, marker_type=?,
+                  latitude=?, longitude=?, altitude_m=?, meta=?
+                WHERE id=?
+                """,
+                (
+                    time.time(),
+                    str(merged["name"]).strip(),
+                    (merged.get("description") or "").strip(),
+                    str(merged.get("marker_type") or "interest").strip(),
+                    float(merged["latitude"]),
+                    float(merged["longitude"]),
+                    merged.get("altitude_m"),
+                    json.dumps(merged.get("meta") or {}),
+                    feature_id,
+                ),
+            )
+        return self.get_map_feature(feature_id)
+
+    def delete_map_feature(self, feature_id: int) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM map_features WHERE id=?", (feature_id,))
+            return cur.rowcount > 0
 
     def add_edge_event(self, meta: dict, path: str) -> int:
         loc = self.latest_location()

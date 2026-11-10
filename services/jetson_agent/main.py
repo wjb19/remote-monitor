@@ -21,13 +21,16 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+import hub_discover  # noqa: E402
 import lora_e5  # noqa: E402
 import motion_camera  # noqa: E402
 import telemetry  # noqa: E402
+import thermal  # noqa: E402
 import voltage  # noqa: E402
 
 STARTED = time.time()
 _latest_voltage = {"ok": False}
+_latest_thermal = {"ok": False}
 _sx1302 = {"ok": False, "chip_version": None, "note": None}
 _motion = None
 _lora_e5 = None
@@ -126,9 +129,53 @@ def probe_sx1302():
     }
 
 
+def disk_usage(path="/"):
+    try:
+        st = os.statvfs(path)
+    except Exception as exc:
+        return {"ok": False, "path": path, "error": str(exc)}
+    total = float(st.f_frsize * st.f_blocks)
+    free = float(st.f_frsize * st.f_bavail)
+    used = total - free
+    return {
+        "ok": True,
+        "path": path,
+        "total_bytes": int(total),
+        "free_bytes": int(free),
+        "used_bytes": int(used),
+        "used_pct": round((used / total) * 100.0, 1) if total else None,
+        "free_gb": round(free / (1024.0 ** 3), 2) if total else None,
+        "total_gb": round(total / (1024.0 ** 3), 2) if total else None,
+    }
+
+
+_tk1_cache = {"ts": 0.0, "body": None}
+
+
+def probe_tk1(timeout=1.5):
+    """The TK1 sits on the Jetson Ethernet; the hub reaches it through us."""
+    now = time.time()
+    if now - _tk1_cache["ts"] < 8 and _tk1_cache["body"] is not None:
+        return _tk1_cache["body"]
+    url = env("RMLAB_TK1_URL", "http://192.168.8.2:8090").rstrip("/") + "/health"
+    try:
+        from urllib.request import urlopen
+
+        raw = urlopen(url, timeout=timeout).read().decode("utf-8", "replace")
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            body = {"ok": False, "error": "bad tk1 payload"}
+    except Exception as exc:
+        body = {"ok": False, "error": str(exc), "url": url}
+    _tk1_cache["ts"] = now
+    _tk1_cache["body"] = body
+    return body
+
+
 def health_payload():
     with _lock:
         volt = dict(_latest_voltage)
+        therm = dict(_latest_thermal)
         sx = dict(_sx1302)
         motion_state = None if _motion is None else dict(_motion.state)
         e5_state = None if _lora_e5 is None else dict(_lora_e5.state)
@@ -138,7 +185,9 @@ def health_payload():
         "hostname": os.uname()[1],
         "uptime_s": round(time.time() - STARTED, 1),
         "region": env("RMLAB_REGION", "US915"),
-        "main_url": env("RMLAB_MAIN_URL", "http://192.168.1.14:8080"),
+        "main_url": hub_discover.main_url(),
+        "hub": hub_discover.snapshot(),
+        "disk": disk_usage("/"),
         "devices": {
             "spidev0": path_status("/dev/spidev0.0"),
             "spidev1": path_status("/dev/spidev1.0"),
@@ -150,14 +199,16 @@ def health_payload():
             env("RMLAB_PACKET_FORWARDER_CONF", "/etc/rmlab/global_conf.json")
         ),
         "gateway": {
-            "server": env("RMLAB_GATEWAY_SERVER", "192.168.1.14"),
+            "server": hub_discover.gateway_server(),
             "port_up": int(env("RMLAB_GATEWAY_PORT_UP", "1700")),
             "port_down": int(env("RMLAB_GATEWAY_PORT_DOWN", "1700")),
         },
         "voltage": volt,
+        "thermal": therm,
         "sx1302": sx,
         "motion_camera": motion_state,
         "lora_e5": e5_state,
+        "tk1": probe_tk1(),
     }
 
 
@@ -182,6 +233,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/voltage":
             self._send(200, voltage.sample_rails())
             return
+        if path == "/api/thermal":
+            self._send(200, thermal.sample())
+            return
         if path == "/api/sx1302":
             self._send(200, sx1302_status())
             return
@@ -201,13 +255,25 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
-        if path != "/api/motion":
-            self._send(404, {"ok": False, "error": "not found"})
-            return
         try:
             body = json.loads(raw.decode("utf-8") or "{}")
         except Exception:
             self._send(400, {"ok": False, "error": "invalid json"})
+            return
+        if path == "/api/hub":
+            url = str(body.get("url") or "").strip()
+            if not url:
+                self._send(400, {"ok": False, "error": "url required"})
+                return
+            gateway_ip = body.get("gateway_server") or body.get("ip")
+            state = hub_discover.accept_hub(url, gateway_ip=gateway_ip)
+            self._send(200, {"ok": True, "hub": state})
+            return
+        if path == "/api/hub/discover":
+            self._send(200, {"ok": True, "hub": hub_discover.scan()})
+            return
+        if path != "/api/motion":
+            self._send(404, {"ok": False, "error": "not found"})
             return
         if _motion is None:
             self._send(503, {"ok": False, "error": "motion camera not started"})
@@ -254,6 +320,45 @@ def voltage_loop():
             except Exception as exc:
                 with _lock:
                     _latest_voltage["upload_error"] = str(exc)
+        time.sleep(interval)
+
+
+def thermal_loop():
+    interval = float(env("RMLAB_THERMAL_INTERVAL_S", "15"))
+    while True:
+        sample = thermal.sample()
+        sample["ts"] = time.time()
+        with _lock:
+            global _latest_thermal
+            _latest_thermal = sample
+        points = []
+        if sample.get("tboard_c") is not None:
+            points.append(
+                {
+                    "metric": "jetson.tboard_c",
+                    "ts": sample["ts"],
+                    "value": float(sample["tboard_c"]),
+                    "tags": {
+                        "host": os.uname()[1],
+                        "sensor": sample.get("sensor") or "AO-therm",
+                    },
+                }
+            )
+        if sample.get("tcpu_c") is not None:
+            points.append(
+                {
+                    "metric": "jetson.tcpu_c",
+                    "ts": sample["ts"],
+                    "value": float(sample["tcpu_c"]),
+                    "tags": {"host": os.uname()[1], "sensor": "CPU-therm"},
+                }
+            )
+        if points:
+            try:
+                telemetry.post_json("/api/telemetry/points", {"points": points})
+            except Exception as exc:
+                with _lock:
+                    _latest_thermal["upload_error"] = str(exc)
         time.sleep(interval)
 
 
@@ -308,11 +413,16 @@ def on_e5_sample(sample):
     }
     points = []
     sensors = sample.get("sensors") or {}
-    for key, metric in (
+    sensor_metrics = (
         ("temperature_c", "lora_e5.temperature_c"),
         ("vdd_v", "lora_e5.vdd_v"),
         ("humidity_pct", "lora_e5.humidity_pct"),
-    ):
+        ("mq2_mv", "lora_e5.mq2_mv"),
+        ("mq8_mv", "lora_e5.mq8_mv"),
+        ("mq135_mv", "lora_e5.mq135_mv"),
+        ("mq5_mv", "lora_e5.mq5_mv"),
+    )
+    for key, metric in sensor_metrics:
         if key in sensors and sensors[key] is not None:
             points.append(
                 {
@@ -324,11 +434,16 @@ def on_e5_sample(sample):
             )
     node_tags = dict(tags)
     node_tags["transport"] = sample.get("transport") or "usb-uart"
-    for key, metric in (
+    node_metrics = (
         ("temperature_c", "node.temperature_c"),
         ("vdd_v", "node.vdd_v"),
         ("humidity_pct", "node.humidity_pct"),
-    ):
+        ("mq2_mv", "node.mq2_mv"),
+        ("mq8_mv", "node.mq8_mv"),
+        ("mq135_mv", "node.mq135_mv"),
+        ("mq5_mv", "node.mq5_mv"),
+    )
+    for key, metric in node_metrics:
         if key in sensors and sensors[key] is not None:
             points.append(
                 {
@@ -348,7 +463,9 @@ def main():
     host = env("RMLAB_HOST", "0.0.0.0")
     port = int(env("RMLAB_PORT", "8090"))
 
+    hub_discover.start_background()
     threading.Thread(target=voltage_loop, name="voltage", daemon=True).start()
+    threading.Thread(target=thermal_loop, name="thermal", daemon=True).start()
     threading.Thread(target=sx1302_loop, name="sx1302", daemon=True).start()
 
     _motion = motion_camera.MotionCamera(

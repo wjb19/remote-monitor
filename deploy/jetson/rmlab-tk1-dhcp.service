@@ -1,0 +1,14 @@
+[Unit]
+Description=DHCP for the TK1 on Jetson eth0 (192.168.8.2)
+After=network-online.target rmlab-direct-link.service
+Wants=network-online.target rmlab-direct-link.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq -C /etc/rmlab/dnsmasq-tk1.conf -k --user=dnsmasq --group=nogroup
+ExecStartPre=/bin/mkdir -p /var/lib/misc
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,8 +1,7 @@
 """Headless Tegra K1 agent: motion video plus the camera microphone.
 
-Python 2.7. The collector URL is RMLAB_MAIN_URL (the hub on this LAN).
-When the K1 moves onto the Jetson's network, point that variable at the
-host that should receive the clips.
+Python 2.7. The collector URL comes from the Jetson agent on the direct
+Ethernet link (hub_from_jetson), with RMLAB_MAIN_URL as an optional override.
 """
 
 from __future__ import print_function
@@ -20,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import hub_from_jetson  # noqa: E402
 import motion_av  # noqa: E402
 import power  # noqa: E402
 import thermal  # noqa: E402
@@ -39,19 +39,52 @@ def env(key, default):
     return os.environ.get(key, default)
 
 
+def disk_usage(path="/"):
+    try:
+        st = os.statvfs(path)
+    except Exception as exc:
+        return {"ok": False, "path": path, "error": str(exc)}
+    total = float(st.f_frsize * st.f_blocks)
+    free = float(st.f_frsize * st.f_bavail)
+    used = total - free
+    return {
+        "ok": True,
+        "path": path,
+        "total_bytes": int(total),
+        "free_bytes": int(free),
+        "used_bytes": int(used),
+        "used_pct": round((used / total) * 100.0, 1) if total else None,
+        "free_gb": round(free / (1024.0 ** 3), 2) if total else None,
+        "total_gb": round(total / (1024.0 ** 3), 2) if total else None,
+    }
+
+
 def health_payload():
     with _lock:
         motion_state = None if _motion is None else dict(_motion.state)
         supply = dict(_power)
     supply.pop("rails", None)
+    therm = {
+        "ok": supply.get("tboard_c") is not None or supply.get("tcpu_c") is not None,
+        "sensor": supply.get("thermal_sensor") or "Tboard_tegra",
+        "tboard_c": supply.get("tboard_c"),
+        "tcpu_c": supply.get("tcpu_c"),
+        "ts": supply.get("ts"),
+    }
+    # Keep power payload focused on the INA3221 rails.
+    for key in ("tboard_c", "tcpu_c", "thermal_sensor"):
+        supply.pop(key, None)
     return {
         "ok": True,
         "service": "tk1-agent",
         "hostname": os.uname()[1],
         "uptime_s": round(time.time() - STARTED, 1),
-        "main_url": env("RMLAB_MAIN_URL", "http://192.168.1.14:8080"),
+        "main_url": hub_from_jetson.main_url(),
+        "hub": hub_from_jetson.snapshot(),
+        "disk": disk_usage("/"),
         "motion_camera": motion_state,
         "supply": supply,
+        "thermal": therm,
     }
 
 
@@ -81,6 +114,9 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 payload = dict(_power)
             self._send(200, payload)
+            return
+        if path == "/api/thermal":
+            self._send(200, thermal.sample())
             return
         self._send(404, {"ok": False, "error": "not found"})
 
@@ -121,7 +157,10 @@ def power_loop():
     while True:
         sample = power.sample()
         sample["ts"] = time.time()
-        sample["tboard_c"] = thermal.read_tboard_c()
+        therm = thermal.sample()
+        sample["tboard_c"] = therm.get("tboard_c")
+        sample["tcpu_c"] = therm.get("tcpu_c")
+        sample["thermal_sensor"] = therm.get("sensor")
         with _lock:
             _power = sample
         points = []
@@ -161,6 +200,15 @@ def power_loop():
                     "tags": {"sensor": "Tboard_tegra"},
                 }
             )
+        if sample.get("tcpu_c") is not None:
+            points.append(
+                {
+                    "metric": "tk1.tcpu_c",
+                    "ts": sample["ts"],
+                    "value": sample["tcpu_c"],
+                    "tags": {"sensor": "CPU-therm"},
+                }
+            )
         if points:
             try:
                 upload.post_json("/api/telemetry/points", {"points": points})
@@ -174,6 +222,7 @@ def main():
     global _motion
     host = env("RMLAB_HOST", "0.0.0.0")
     port = int(env("RMLAB_PORT", "8090"))
+    hub_from_jetson.start_background()
     power_thread = threading.Thread(target=power_loop)
     power_thread.setDaemon(True)
     power_thread.start()
